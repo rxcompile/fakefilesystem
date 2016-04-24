@@ -42,38 +42,77 @@ function get_block {
 local l_skip=$1;
 local l_size=${3:-1};
 local l_count=${2:-1};
-dd if=$device bs=$l_size count=$l_count skip=$l_skip status=none conv=notrunc,sync
+local ret=$(dd if=$device bs=$l_size count=$l_count skip=$l_skip status=none conv=notrunc,sync)
+if [[ $? > 0 ]]; then
+    echo ""
+else
+    echo $ret
+fi
 }
 
 function set_block {
-local l_bytes=${1:-\x00};
+local l_bytes=$1;
 local l_seek=${2:-0};
 local l_count=${3:-$(get_length $l_bytes)};
 echo -ne $l_bytes | dd of=$device bs=1 seek=$l_seek count=$l_count status=none conv=notrunc,sync
 }
 
+function find_free_slot {
+for (( off=$off_filemeta; off<$filemeta_count*$off_filemeta; off+=$off_filemeta ))
+do
+    if [[ $(get_block $off 1) == "\x00" ]]; then
+        echo $(expr $off / 32);
+        break;
+    fi
+done
+echo $off_filemeta;
+}
+
 function set_filemeta {
-local l_filename=$1;
-local l_slot=find_free_slot;
+local l_filename=${1:0:$len_filemeta_name};
+local l_slot=${2:-$(find_free_slot)};
 set_block $l_filename $(expr $l_slot \* 32 + $off_filemeta);
+}
+
+function get_filemeta {
+local l_slot=${1:-0}
+local ret=$(get_block $(expr $l_slot \* 32 + $off_filemeta) $len_filemeta_name)
+if [[ $? > 0 ]]; then
+    echo ""
+else
+    echo $ret
+fi
+}
+
+function get_file_offset {
+local l_slot=${1:-0}
+get_block $(expr $l_slot \* 32 + $off_filemeta + $len_filemeta_name) $len_filemeta_loc
 }
 
 function create_device {
 touch $device;
 set_block $DEVICE_MAGIC $off_header;
-local i=1;
-for (( off=$off_filemeta; off<$filemeta_count*$off_filemeta; off+=$off_filemeta ))
+for (( i=1; i<$filemeta_count; i++ ))
 do
     echo -n "["
-    for ((j=0; j<i; j++)) ; do echo -n ' '; done
+    for ((j=0; j<i; j++)) ; do echo -n '='; done
     echo -n '=>'
-    for ((j=i; j<$filemeta_count; j++)) ; do echo -n ' '; done
-    echo -n "] $i / $filemeta_count" $'\r'
-    #echo $off
-    set_block 1 $off;
-    ((i++))
+    for ((j=i; j<100; j++)) ; do echo -n ' '; done
+    echo -n "] $i% / 100%" $'\r'
+
+    set_filemeta "\x00" $i;
 done
 echo
+}
+
+function list_device {
+for (( i=1; i<$filemeta_count; i++ ))
+do
+    local l_filename=$(get_filemeta $i)
+    if [[ "$l_filename" != "" ]]; then
+        echo "Slot $i: $(get_filemeta $i) Offset: $(get_file_offset $i)"
+    fi
+done
 }
 
 error_arg $# 1;
@@ -102,12 +141,6 @@ case $mode in
         ;;
 esac
 
-
-#set_block $DEVICE_MAGIC $off_header;
-#get_block $off_header;
-get_block $off_header $(get_length $DEVICE_MAGIC)
-echo "$DEVICE_MAGIC"
-
 case $mode in
     format )
         rm -f $device
@@ -115,6 +148,12 @@ case $mode in
         create_device;
         check_fs;
         echo "Device is OK"
+        ;;
+    ls )
+        check_fs;
+        echo "Device is OK"
+        echo "Device listing:"
+        list_device;
         ;;
     download )
         echo "Download mode active"
@@ -131,15 +170,9 @@ case $mode in
         check_fs;
         echo "Device is OK, working"
         ;;
-    ls )
-        echo "Device listing"
-        check_fs;
-        echo "Device is OK, working"
-        ;;
     rm )
         echo "Removing file from device"
         check_fs;
         echo "Device is OK, working"
         ;;
 esac
-
